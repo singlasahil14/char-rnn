@@ -22,9 +22,7 @@ class TextLoader():
         vocab_map_file = self.vocab_map_file
         tensor_file = self.tensor_file
 
-        print("reading text file")
         text = open(input_file).read()
-        print('corpus length:', len(text))
         chars = sorted(list(set(text)))
         chars.insert(0, "\0")
         self.vocab_size = len(chars)
@@ -43,21 +41,22 @@ class TextLoader():
         self.tensor = np.load(self.tensor_file)
         self.indices2char = {v: k for k, v in self.char2indices.iteritems()}
 
-    def get_batches(self):
+    def data_iterator(self):
         tensor = self.tensor
+        batch_size = self.batch_size
         seq_length = self.seq_length
 
-        c_in_dat = [[tensor[i+n] for i in xrange(0, len(tensor)-1-seq_length, seq_length)] for n in range(seq_length)]
-        c_out_dat = [[tensor[i+n] for i in xrange(1, len(tensor)-seq_length, seq_length)] for n in range(seq_length)]
+        data_len = len(tensor)
+        batch_len = batch_size * seq_length
+        data_len = data_len - (data_len%batch_len)
+        size_per_batch = data_len//batch_size
+        epoch_size = data_len//batch_len
 
-        xs = [np.stack(c[:-2]) for c in c_in_dat]
-        ys = [np.stack(c[:-2]) for c in c_out_dat]
+        data = np.zeros([batch_size, size_per_batch + 1], dtype=np.int32)
+        for i in range(batch_size):
+            data[i] = tensor[size_per_batch * i: size_per_batch * (i + 1) + 1]
 
-        x_rnn=np.stack(xs, axis=1)
-        y_rnn=np.expand_dims(np.stack(ys, axis=1), -1)
-
-        print(x_rnn.shape)
-        print(y_rnn.shape)
-
-t = TextLoader()
-t.get_batches()
+        for i in range(epoch_size):
+            x = data[:, i * seq_length:(i + 1) * seq_length]
+            y = data[:, i * seq_length + 1:(i + 1) * seq_length + 1]
+            yield(x, y)
