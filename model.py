@@ -11,6 +11,7 @@ class Config(object):
     num_steps = 8
     embed_size = 35
     hidden_size = 512
+    num_layers = 3
     vocab_size = 86
     model_type = 'lstm'
     l2 = 0.002
@@ -81,11 +82,14 @@ class Model():
         num_steps = self.config.num_steps
         batch_size = self.config.batch_size
         vocab_size = self.config.vocab_size
+
         targets = tf.reshape(self.labels_placeholder, [-1])
         weights = tf.ones([batch_size * num_steps], dtype=tf.float32)
-        cross_entropy = sequence_loss([output], [targets], [weights], vocab_size)
-        tf.add_to_collection('total_loss', cross_entropy)
-        loss = tf.add_n(tf.get_collection('total_loss'))
+        cross_entropy_loss = seq2seq.sequence_loss([output], [targets], [weights], vocab_size)
+
+        params = tf.trainable_variables()
+        l2_loss = tf.add_n([ tf.nn.l2_loss(v) for v in params]) * self.config.l2
+        loss = cross_entropy_loss + l2_loss
         return loss
 
     def add_model(self, inputs):
@@ -101,3 +105,36 @@ class Model():
         embed_size = self.config.embed_size
         hidden_size = self.config.hidden_size
         num_steps = self.config.num_steps
+        num_layers = self.config.num_layers
+        model_type = self.config.model_type
+
+        if model_type == 'rnn':
+            cell_fn = rnn_cell.BasicRNNCell
+        elif model_type == 'gru':
+            cell_fn = rnn_cell.GRUCell
+        elif model_type == 'lstm':
+            cell_fn = rnn_cell.BasicLSTMCell
+
+        cell = cell_fn(hidden_size, state_is_tuple=True)
+        stacked_cell = rnn_cell.MultiRNNCell([cell] * num_layers, state_is_tuple=True)
+
+        self.initial_state = state = tf.zeros([batch_size, hidden_size])
+        for i in range(num_steps):
+            output, state = stacked_cell(inputs[:, i], state)
+            rnn_outputs.append(output)
+        self.final_state = state
+        return rnn_outputs
+
+    def add_training_op(self, loss):
+      """Sets up the training Ops.
+      Creates an optimizer and applies the gradients to all trainable variables.
+      Args:
+        loss: Loss tensor, from cross_entropy_loss.
+      Returns:
+        train_op: The Op for training.
+      """
+        params = tf.trainable_variables()
+        gradients = tf.gradients(loss, params)
+        optimizer = tf.train.AdamOptimizer(self.lr)
+        train_op = optimizer.apply_gradients(zip(gradients, params))
+        return train_op
