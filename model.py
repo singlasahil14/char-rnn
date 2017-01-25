@@ -10,23 +10,22 @@ import sys
 from utils import TextLoader
 
 class Config(object):
-	"""Holds model hyperparams and data information.
-	   Model objects are passed a Config() object at instantiation.
-	"""
-	num_steps = 8
-	embed_size = 48
-	hidden_size = 512
-	num_layers = 2
-	vocab_size = 86
-	model_type = 'lstm'
-	l2 = 0.002
-	lr = 0.001
+    """Holds model hyperparams and data information.
+       Model objects are passed a Config() object at instantiation.
+    """
+    num_steps = 8
+    embed_size = 48
+    hidden_size = 512
+    num_layers = 2
+    model_type = 'lstm'
+    l2 = 0.000
+    lr = 0.001
 
-	batch_size = 128
-	anneal_by = 0.97
-	anneal_after = 10
-	max_epochs = 4
-	text_loader = TextLoader(batch_size=batch_size, seq_length=num_steps)
+    batch_size = 128
+    anneal_by = 0.97
+    max_epochs = 4
+    text_loader = TextLoader(batch_size=batch_size, seq_length=num_steps)
+    vocab_size = text_loader.vocab_size
 
 class Model():
   
