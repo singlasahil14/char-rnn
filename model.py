@@ -14,18 +14,18 @@ class Config(object):
 	   Model objects are passed a Config() object at instantiation.
 	"""
 	num_steps = 8
-	embed_size = 35
+	embed_size = 48
 	hidden_size = 512
-	num_layers = 3
+	num_layers = 2
 	vocab_size = 86
 	model_type = 'lstm'
 	l2 = 0.002
 	lr = 0.001
 
 	batch_size = 128
-	anneal_by = 0.1
+	anneal_by = 0.97
 	anneal_after = 10
-	max_epochs = 30
+	max_epochs = 4
 	text_loader = TextLoader(batch_size=batch_size, seq_length=num_steps)
 
 class Model():
@@ -62,11 +62,19 @@ class Model():
 	    """
         embed_size = self.config.embed_size
         vocab_size = self.config.vocab_size
+        num_steps = self.config.num_steps
         embeddings = tf.get_variable(name='embeddings',
-                                     shape=[vocab_size, embed_size], 
-                                     trainable=True,
-                                     dtype=tf.float32)
+                                     shape=[vocab_size, embed_size])
         inputs = tf.nn.embedding_lookup(embeddings, self.inputs_placeholder)
+        batch_mean, batch_var = tf.nn.moments(inputs, [0,1])
+        inputs_bn = (inputs - batch_mean)/tf.sqrt(batch_var + 1e-3)
+        scale = tf.get_variable(name='scale', 
+                                shape=[embed_size],
+                                initializer=tf.constant_initializer(1.0))
+        shift = tf.get_variable(name='shift', 
+                                shape=[embed_size], 
+                                initializer=tf.constant_initializer(0.0))
+        inputs = scale*inputs_bn + shift
         inputs = tf.unstack(inputs, axis=1)
         return inputs
 
@@ -169,7 +177,6 @@ class Model():
         total_steps = sum(1 for x in self.config.text_loader.data_iterator())
         total_loss = []
         state = session.run(self.initial_state)
-        print(self.initial_state)
  
         for step, (x, y) in enumerate(
             self.config.text_loader.data_iterator()):
@@ -182,54 +189,61 @@ class Model():
                   [self.calculate_loss, self.final_state, train_op], feed_dict=feed)
             total_loss.append(loss)
             if verbose and step % verbose == 0:
-                sys.stdout.write('\r{} / {} : pp = {}'.format(
-				  step, total_steps, np.exp(np.mean(total_loss))))
+                sys.stdout.write('\r{} / {} : loss = {}'.format(
+				  step, total_steps, np.mean(total_loss)))
                 sys.stdout.flush()
         if verbose:
             sys.stdout.write('\r')
-        return np.exp(np.mean(total_loss))
+        return np.mean(total_loss)
 
-def generate_text(session, model, config, starting_text='<eos>',
-				  stop_length=100, stop_tokens=None, temp=1.0):
+def generate_text(session, scope_name, orig_config, seed_string, final_len=100,
+                 stop_tokens=None):
     """Generate text from the model.
     Args:
         session: tf.Session() object
         model: Object of type RNNLM_Model
         config: A Config() object
-        starting_text: Initial text passed to model.
+        seed_text: Initial text passed to model
+        final_len: Final length of output string
     Returns:
         output: List of word idxs
     """
-    state = model.initial_state.eval()
-    # Imagine tokens as a batch size of one, length of len(tokens[0])
-    tokens = [model.vocab.encode(word) for word in starting_text.split()]
-    for i in xrange(stop_length):
-        feed = {model.input_placeholder: [tokens[-1:]], 
-            model.initial_state: state}
-        state, y_pred = session.run(
-              [model.final_state, model.predictions[-1]], feed_dict=feed)
-        next_word_idx = sample(y_pred[0], temperature=temp)
-        tokens.append(next_word_idx)
-        if stop_tokens and model.vocab.decode(tokens[-1]) in stop_tokens:
-            break
-    output = [model.vocab.decode(word_idx) for word_idx in tokens]
-    return output
+    text_loader = orig_config.text_loader
+    seq_len = len(seed_string)
 
-def generate_sentence(session, model, config, *args, **kwargs):
+    gen_config = deepcopy(orig_config)
+    gen_config.batch_size = 1
+    gen_config.num_steps = seq_len
+    with tf.variable_scope(scope_name) as scope:
+        scope.reuse_variables()
+        gen_model = Model(gen_config)
+    state = session.run(gen_model.initial_state)
+    max_iter = final_len - seq_len
+    for i in range(max_iter):
+        x=np.array([text_loader.char2indices[c] for c in seed_string[-seq_len:]])[np.newaxis,:]
+        feed = {gen_model.inputs_placeholder: x, 
+                gen_model.initial_state: state}
+        state, preds = session.run([gen_model.final_state, gen_model.predictions[-1]], 
+                                    feed_dict=feed)
+        preds = np.reshape(preds/np.sum(preds), preds.shape[1])
+        next_char = np.random.choice(text_loader.chars, p=preds)
+        seed_string = seed_string + next_char
+        if(next_char in stop_tokens):
+            break
+    return seed_string
+
+def generate_sentence(session, scope_name, orig_config, seed_string):
     """Convenice to generate a sentence from the model."""
-    return generate_text(session, model, config, *args, stop_tokens=['<eos>'], **kwargs)
+    return generate_text(session, scope_name, orig_config, seed_string, stop_tokens=['.'])
 
 def test_charRNN():
     config = Config()
-    gen_config = deepcopy(config)
-    gen_config.batch_size = gen_config.num_steps = 1
   
     # We create the training model and generative model
-    with tf.variable_scope('RNNLM') as scope:
+    scope_name = 'RNNLM'
+    with tf.variable_scope(scope_name) as scope:
         model = Model(config)
         # This instructs gen_model to reuse the same variables as the model above
-        scope.reuse_variables()
-        gen_model = Model(gen_config)
 
     model_file = './models/char_rnnlm.weights' 
     with tf.Session() as session:
@@ -243,18 +257,20 @@ def test_charRNN():
             print 'Epoch {}'.format(epoch)
             start = time.time()
             ###
-            train_pp = model.run_epoch(
+            train_loss = model.run_epoch(
             session, train_op=model.train_step)
-            print 'Training perplexity: {}'.format(train_pp)
+            model.config.lr = model.config.lr*model.config.anneal_by
+            print 'Training loss: {}'.format(train_loss)
             saver.save(session, model_file)
             print 'Total time: {}'.format(time.time() - start)
 
-    saver.restore(session, model_file)
-    starting_text = 'in palo alto'
-    while starting_text:
-        print ' '.join(generate_sentence(
-		        session, gen_model, gen_config, starting_text=starting_text, temp=1.0))
-        starting_text = raw_input('> ')
+        saver.restore(session, model_file)
+        starting_text = 'ethics is a basic foundation of all that'
+        while starting_text:
+            output = generate_sentence(session, scope_name, 
+                              config, seed_string=starting_text)
+            print(output)
+            starting_text = raw_input('> ')
 
 if __name__ == "__main__":
     test_charRNN()

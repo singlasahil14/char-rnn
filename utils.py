@@ -23,8 +23,9 @@ class TextLoader():
         tensor_file = self.tensor_file
 
         text = open(input_file).read()
-        chars = sorted(list(set(text)))
+        chars = list(set(text))
         chars.insert(0, "\0")
+        self.chars = sorted(chars)
         self.vocab_size = len(chars)
 
         self.char2indices = dict((c, i) for i, c in enumerate(chars))
@@ -37,6 +38,7 @@ class TextLoader():
     def load_preprocessed(self):
         with open(self.vocab_map_file, 'rb') as f:
             self.char2indices = cPickle.load(f)
+        self.chars = sorted(self.char2indices.keys())
         self.vocab_size = len(self.char2indices)
         self.tensor = np.load(self.tensor_file)
         self.indices2char = {v: k for k, v in self.char2indices.iteritems()}
