@@ -50,7 +50,7 @@ class TextLoader():
 
         data_len = len(tensor)
         batch_len = batch_size * seq_length
-        data_len = data_len - (data_len%batch_len)
+        data_len = data_len - (data_len%batch_len) - batch_len
         size_per_batch = data_len//batch_size
         epoch_size = data_len//batch_len
 
