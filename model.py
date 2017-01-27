@@ -18,12 +18,11 @@ class Config(object):
     hidden_size = 512
     num_layers = 2
     model_type = 'lstm'
-    l2 = 0.000
     lr = 0.001
 
     batch_size = 128
     anneal_by = 0.97
-    max_epochs = 4
+    max_epochs = 50
     text_loader = TextLoader(batch_size=batch_size, seq_length=num_steps)
     vocab_size = text_loader.vocab_size
 
@@ -147,10 +146,7 @@ class Model():
         weights = tf.ones([batch_size * num_steps], dtype=tf.float32)
         cross_entropy_loss = seq2seq.sequence_loss([output], [targets], [weights], vocab_size)
 
-        params = tf.trainable_variables()
-        l2_loss = tf.add_n([ tf.nn.l2_loss(v) for v in params]) * self.config.l2
-        loss = cross_entropy_loss + l2_loss
-        return loss
+        return cross_entropy_loss
 
     def add_training_op(self, loss):
         """Sets up the training Ops.
@@ -195,14 +191,13 @@ class Model():
             sys.stdout.write('\r')
         return np.mean(total_loss)
 
-def generate_text(session, scope_name, orig_config, seed_string, final_len=100,
-                 stop_tokens=None):
+def generate_text(session, scope_name, orig_config, seed_string, final_len=320):
     """Generate text from the model.
     Args:
         session: tf.Session() object
-        model: Object of type RNNLM_Model
-        config: A Config() object
-        seed_text: Initial text passed to model
+        scope_name: name of scope in which model exists
+        orig_config: A Config() object
+        seed_string: Initial text passed to model
         final_len: Final length of output string
     Returns:
         output: List of word idxs
@@ -227,13 +222,11 @@ def generate_text(session, scope_name, orig_config, seed_string, final_len=100,
         preds = np.reshape(preds/np.sum(preds), preds.shape[1])
         next_char = np.random.choice(text_loader.chars, p=preds)
         seed_string = seed_string + next_char
-        if(next_char in stop_tokens):
-            break
     return seed_string
 
 def generate_sentence(session, scope_name, orig_config, seed_string):
     """Convenice to generate a sentence from the model."""
-    return generate_text(session, scope_name, orig_config, seed_string, stop_tokens=['.'])
+    return generate_text(session, scope_name, orig_config, seed_string)
 
 def test_charRNN():
     config = Config()
