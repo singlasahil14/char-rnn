@@ -1,5 +1,5 @@
 import tensorflow as tf
-
+import argparse
 import numpy as np
 from copy import deepcopy
 import time
@@ -7,27 +7,12 @@ import sys
 
 from utils import TextLoader
 
-class Config(object):
-    """Holds model hyperparams and data information.
-       Model objects are passed a Config() object at instantiation.
-    """
-    num_steps = 8
-    embed_size = 48
-    hidden_size = 512
-    num_layers = 2
-    model_type = 'lstm'
-    lr = 0.001
-
-    batch_size = 128
-    anneal_by = 0.97
-    max_epochs = 50
-    text_loader = TextLoader(batch_size=batch_size, seq_length=num_steps)
-    vocab_size = text_loader.vocab_size
-
 class Model():
   
     def __init__(self, config):
         self.config = config
+        text_loader = TextLoader(batch_size=config.batch_size, seq_length=config.num_steps)
+        self._vocab_size = text_loader.vocab_size
         self._add_placeholders()
         inputs = self._add_embedding()
         rnn_outputs = self._add_model(inputs)
@@ -56,9 +41,8 @@ class Model():
                   a tensor of shape (batch_size, embed_size).
 	    """
         embed_size = self.config.embed_size
-        vocab_size = self.config.vocab_size
         num_steps = self.config.num_steps
-        embeddings = tf.get_variable(name='embeddings', shape=[vocab_size, embed_size])
+        embeddings = tf.get_variable(name='embeddings', shape=[self._vocab_size, embed_size])
         inputs = tf.nn.embedding_lookup(embeddings, self.inputs_placeholder)
         batch_mean, batch_var = tf.nn.moments(inputs, [0,1])
         inputs_bn = (inputs - batch_mean)/tf.sqrt(batch_var + 1e-3)
@@ -85,13 +69,13 @@ class Model():
         hidden_size = self.config.hidden_size
         num_steps = self.config.num_steps
         num_layers = self.config.num_layers
-        model_type = self.config.model_type
+        rnn_type = self.config.rnn_type
 
-        if model_type == 'rnn':
+        if rnn_type == 'rnn':
             cell_fn = tf.contrib.rnn.BasicRNNCell
-        elif model_type == 'gru':
+        elif rnn_type == 'gru':
             cell_fn = tf.contrib.rnn.GRUCell
-        elif model_type == 'lstm':
+        elif rnn_type == 'lstm':
             cell_fn = tf.contrib.rnn.BasicLSTMCell
 
         with tf.variable_scope('RNN') as scope:
@@ -115,10 +99,9 @@ class Model():
         """
         num_steps = self.config.num_steps
         hidden_size = self.config.hidden_size
-        vocab_size = self.config.vocab_size
         with tf.variable_scope('projection') as scope:
-            proj_U = tf.get_variable(name='W', shape=[hidden_size, vocab_size])
-            proj_b = tf.get_variable(name='biases', shape=[vocab_size],
+            proj_U = tf.get_variable(name='W', shape=[hidden_size, self._vocab_size])
+            proj_b = tf.get_variable(name='biases', shape=[self._vocab_size],
                                      initializer=tf.constant_initializer(0.0))
 
         concat_rnn_outputs = tf.concat(rnn_outputs, 0)
@@ -136,7 +119,6 @@ class Model():
         """
         num_steps = self.config.num_steps
         batch_size = self.config.batch_size
-        vocab_size = self.config.vocab_size
 
         targets = self.labels_placeholder
         weights = tf.ones([batch_size,  num_steps], dtype=tf.float32)
@@ -169,8 +151,7 @@ class Model():
         total_loss = []
         state = session.run(self.initial_state)
  
-        for step, (x, y) in enumerate(
-            self.config.text_loader.data_iterator()):
+        for step, (x, y) in enumerate(self.config.text_loader.data_iterator()):
             # We need to pass in the initial state and retrieve the final state to give
             # the RNN proper history
             feed = {self.inputs_placeholder: x, self.labels_placeholder: y,
@@ -223,9 +204,34 @@ def generate_sentence(session, scope_name, orig_config, seed_string):
     """Convenice to generate a sentence from the model."""
     return generate_text(session, scope_name, orig_config, seed_string)
 
-def test_charRNN():
-    config = Config()
-  
+def add_arguments(parser):
+    parser.add_argument('--num-steps', default=8, type=int, help='RNN sequence length')
+    parser.add_argument('--embed-size', default=48, type=int, help='size of character embedding')
+    parser.add_argument('--hidden-size', default=512, type=int, help='size of hidden state of RNN')
+    parser.add_argument('--num-layers', default=2, type=int, help='number of layers of RNNs')
+    parser.add_argument('--rnn-type', default='rnn', choices=['rnn', 'lstm', 'gru'], type=str, help='type of RNN to use')
+    parser.add_argument('--learning-rate', default=0.001, type=float, help='learning rate for adam optimizer')
+    parser.add_argument('--batch-size', default=128, type=int, help='batch size to use for training')
+    parser.add_argument('--anneal-rate', default=0.97, type=float, help='rate by which to decrease the learning rate every epoch')
+    parser.add_argument('--max-epochs', default=50, type=int, help='number of epochs to train for')
+    return parser
+
+def check_config(config):
+    assert config.num_steps > 0
+    assert config.embed_size > 0
+    assert config.hidden_size > 0
+    assert config.num_layers > 0
+    assert config.learning_rate > 0
+    assert config.batch_size > 0
+    assert config.anneal_rate > 0
+    assert config.max_epochs > 0
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser = add_arguments(parser)
+    config = parser.parse_args()
+    check_config(config)
+
     # We create the training model and generative model
     scope_name = 'RNNLM'
     with tf.variable_scope(scope_name) as scope:
@@ -260,4 +266,4 @@ def test_charRNN():
             starting_text = raw_input('> ')
 
 if __name__ == "__main__":
-    test_charRNN()
+    main()
