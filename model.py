@@ -28,29 +28,28 @@ class Model():
   
     def __init__(self, config):
         self.config = config
-        self.add_placeholders()
-        inputs = self.add_embedding()
-        rnn_outputs = self.add_model(inputs)
-        self.outputs = self.add_projection(rnn_outputs)
+        self._add_placeholders()
+        inputs = self._add_embedding()
+        rnn_outputs = self._add_model(inputs)
+        self.outputs = self._add_projection(rnn_outputs)
   
         # We want to check how well we correctly predict the next word
         # We cast o to float64 as there are numerical issues at hand
         # (i.e. sum(output of softmax) = 1.00000298179 and not 1)
-        self.predictions = [tf.nn.softmax(tf.cast(o, 'float64')) for o in self.outputs]
+        self.predictions = tf.nn.softmax(tf.cast(self.outputs, 'float64'))
         # Reshape the output into len(vocab) sized chunks - the -1 says as many as
         # needed to evenly divide
-        output = tf.reshape(tf.concat(1, self.outputs), [-1, self.config.vocab_size])
-        self.calculate_loss = self.add_loss_op(output)
-        self.train_step = self.add_training_op(self.calculate_loss)
+        self.calculate_loss = self._add_loss_op(self.outputs)
+        self.train_step = self._add_training_op(self.calculate_loss)
 
-    def add_placeholders(self):
+    def _add_placeholders(self):
         """Generate placeholder variables to represent the input tensors
         """
         num_steps = self.config.num_steps
         self.inputs_placeholder = tf.placeholder(tf.int32, shape=(None, num_steps))
         self.labels_placeholder = tf.placeholder(tf.int32, shape=(None, num_steps))
     
-    def add_embedding(self):
+    def _add_embedding(self):
         """Add embedding layer.
         Returns:
           inputs: List of length num_steps, each of whose elements should be
@@ -72,7 +71,7 @@ class Model():
         inputs = scale*inputs_bn + shift
         return inputs
 
-    def add_model(self, inputs):
+    def _add_model(self, inputs):
         """Creates the char-rnn language model hidden layer
         Args:
           inputs: List of length num_steps, each of whose elements should be
@@ -96,15 +95,14 @@ class Model():
             cell_fn = tf.contrib.rnn.BasicLSTMCell
 
         with tf.variable_scope('RNN') as scope:
-            cell = cell_fn(hidden_size, state_is_tuple=True)
-            cell = tf.contrib.rnn.MultiRNNCell([cell] * num_layers, state_is_tuple=True)
+            cell = tf.contrib.rnn.MultiRNNCell([cell_fn(hidden_size) for _ in range(num_layers)])
        
         self.initial_state = cell.zero_state(batch_size, tf.float32)
         inputs = tf.unstack(inputs, axis=1)
         rnn_outputs, self.final_state = tf.contrib.rnn.static_rnn(cell, inputs, initial_state=self.initial_state)
         return rnn_outputs
 
-    def add_projection(self, rnn_outputs):
+    def _add_projection(self, rnn_outputs):
         """Adds a projection layer.
         The projection layer transforms the hidden representation to a distribution
         over the vocabulary.
@@ -123,12 +121,13 @@ class Model():
             proj_b = tf.get_variable(name='biases', shape=[vocab_size],
                                      initializer=tf.constant_initializer(0.0))
 
-        concat_rnn_outputs = tf.concat(0, rnn_outputs)
+        concat_rnn_outputs = tf.concat(rnn_outputs, 0)
         concat_outputs = tf.matmul(concat_rnn_outputs, proj_U) + proj_b
-        outputs = tf.split(0, len(rnn_outputs), concat_outputs)
+        outputs = tf.split(concat_outputs, len(rnn_outputs), axis=0)
+        outputs = tf.stack(outputs, axis=1)
         return outputs
 
-    def add_loss_op(self, output):
+    def _add_loss_op(self, output):
         """Adds loss ops to the computational graph.
         Args:
           output: A tensor of shape (None, self.vocab)
@@ -139,13 +138,13 @@ class Model():
         batch_size = self.config.batch_size
         vocab_size = self.config.vocab_size
 
-        targets = tf.reshape(self.labels_placeholder, [-1])
-        weights = tf.ones([batch_size * num_steps], dtype=tf.float32)
-        cross_entropy_loss = tf.contrib.seq2seq.sequence_loss([output], [targets], [weights], vocab_size)
+        targets = self.labels_placeholder
+        weights = tf.ones([batch_size,  num_steps], dtype=tf.float32)
+        cross_entropy_loss = tf.contrib.seq2seq.sequence_loss(output, targets, weights)
 
         return cross_entropy_loss
 
-    def add_training_op(self, loss):
+    def _add_training_op(self, loss):
         """Sets up the training Ops.
         Creates an optimizer and applies the gradients to all trainable variables.
         Args:
@@ -174,8 +173,7 @@ class Model():
             self.config.text_loader.data_iterator()):
             # We need to pass in the initial state and retrieve the final state to give
             # the RNN proper history
-            feed = {self.inputs_placeholder: x,
-                    self.labels_placeholder: y,
+            feed = {self.inputs_placeholder: x, self.labels_placeholder: y,
                     self.initial_state: state}
             loss, state, _ = session.run(
                   [self.calculate_loss, self.final_state, train_op], feed_dict=feed)
