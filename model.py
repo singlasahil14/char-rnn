@@ -10,98 +10,60 @@ from utils import TextLoader
 class Model():
   
     def __init__(self, config):
-        self.config = config
-        text_loader = TextLoader(batch_size=config.batch_size, seq_length=config.num_steps)
-        self._vocab_size = text_loader.vocab_size
+        self._text_loader = TextLoader(batch_size=config.batch_size, seq_length=config.num_steps)
+        self._vocab_size = self._text_loader.vocab_size
+        self._num_steps = config.num_steps
+        self._embed_size = config.embed_size
+        self._batch_size = config.batch_size
+        self._hidden_size = config.hidden_size
+        self._num_layers = config.num_layers
+        self._rnn_type = config.rnn_type
+        self._lr = config.learning_rate
+        self._anneal_rate = config.anneal_rate
         self._add_placeholders()
         inputs = self._add_embedding()
         rnn_outputs = self._add_model(inputs)
         self.outputs = self._add_projection(rnn_outputs)
-        self._lr = self.config.learning_rate
-  
-        # We want to check how well we correctly predict the next word
-        # We cast o to float64 as there are numerical issues at hand
-        # (i.e. sum(output of softmax) = 1.00000298179 and not 1)
         self.predictions = tf.nn.softmax(tf.cast(self.outputs, 'float64'))
-        # Reshape the output into len(vocab) sized chunks - the -1 says as many as
-        # needed to evenly divide
+
         self.calculate_loss = self._add_loss_op(self.outputs)
         self.train_step = self._add_training_op(self.calculate_loss)
 
     def _add_placeholders(self):
-        """Generate placeholder variables to represent the input tensors
-        """
-        num_steps = self.config.num_steps
-        self.inputs_placeholder = tf.placeholder(tf.int32, shape=(None, num_steps))
-        self.labels_placeholder = tf.placeholder(tf.int32, shape=(None, num_steps))
+        self.inputs_placeholder = tf.placeholder(tf.int32, shape=(None, self._num_steps))
+        self.labels_placeholder = tf.placeholder(tf.int32, shape=(None, self._num_steps))
     
     def _add_embedding(self):
-        """Add embedding layer.
-        Returns:
-          inputs: List of length num_steps, each of whose elements should be
-                  a tensor of shape (batch_size, embed_size).
-	    """
-        embed_size = self.config.embed_size
-        num_steps = self.config.num_steps
-        embeddings = tf.get_variable(name='embeddings', shape=[self._vocab_size, embed_size])
+        embeddings = tf.get_variable(name='embeddings', shape=[self._vocab_size, self._embed_size])
         inputs = tf.nn.embedding_lookup(embeddings, self.inputs_placeholder)
         batch_mean, batch_var = tf.nn.moments(inputs, [0,1])
         inputs_bn = (inputs - batch_mean)/tf.sqrt(batch_var + 1e-3)
-        scale = tf.get_variable(name='scale', 
-                                shape=[embed_size],
+        scale = tf.get_variable(name='scale', shape=[self._embed_size],
                                 initializer=tf.constant_initializer(1.0))
-        shift = tf.get_variable(name='shift', 
-                                shape=[embed_size], 
+        shift = tf.get_variable(name='shift', shape=[self._embed_size], 
                                 initializer=tf.constant_initializer(0.0))
         inputs = scale*inputs_bn + shift
         return inputs
 
     def _add_model(self, inputs):
-        """Creates the char-rnn language model hidden layer
-        Args:
-          inputs: List of length num_steps, each of whose elements should be
-          	     a tensor of shape (batch_size, embed_size).
-        Returns:
-          outputs: List of length num_steps, each of whose elements should be
-                 a tensor of shape (batch_size, hidden_size)
-	    """
-        batch_size = self.config.batch_size
-        embed_size = self.config.embed_size
-        hidden_size = self.config.hidden_size
-        num_steps = self.config.num_steps
-        num_layers = self.config.num_layers
-        rnn_type = self.config.rnn_type
-
-        if rnn_type == 'rnn':
+        if self._rnn_type == 'rnn':
             cell_fn = tf.contrib.rnn.BasicRNNCell
-        elif rnn_type == 'gru':
+        elif self._rnn_type == 'gru':
             cell_fn = tf.contrib.rnn.GRUCell
-        elif rnn_type == 'lstm':
+        elif self._rnn_type == 'lstm':
             cell_fn = tf.contrib.rnn.BasicLSTMCell
 
         with tf.variable_scope('RNN') as scope:
-            cell = tf.contrib.rnn.MultiRNNCell([cell_fn(hidden_size) for _ in range(num_layers)])
+            cell = tf.contrib.rnn.MultiRNNCell([cell_fn(self._hidden_size) for _ in range(self._num_layers)])
        
-        self.initial_state = cell.zero_state(batch_size, tf.float32)
+        self.initial_state = cell.zero_state(self._batch_size, tf.float32)
         inputs = tf.unstack(inputs, axis=1)
         rnn_outputs, self.final_state = tf.contrib.rnn.static_rnn(cell, inputs, initial_state=self.initial_state)
         return rnn_outputs
 
     def _add_projection(self, rnn_outputs):
-        """Adds a projection layer.
-        The projection layer transforms the hidden representation to a distribution
-        over the vocabulary.
-        Args:
-	      rnn_outputs: List of length num_steps, each of whose elements should be
-                       a tensor of shape (batch_size, hidden_size).
-        Returns:
-          outputs: List of length num_steps, each a tensor of shape
-                   (batch_size, vocab_size)
-        """
-        num_steps = self.config.num_steps
-        hidden_size = self.config.hidden_size
         with tf.variable_scope('projection') as scope:
-            proj_U = tf.get_variable(name='W', shape=[hidden_size, self._vocab_size])
+            proj_U = tf.get_variable(name='W', shape=[self._hidden_size, self._vocab_size])
             proj_b = tf.get_variable(name='biases', shape=[self._vocab_size],
                                      initializer=tf.constant_initializer(0.0))
 
@@ -112,29 +74,13 @@ class Model():
         return outputs
 
     def _add_loss_op(self, output):
-        """Adds loss ops to the computational graph.
-        Args:
-          output: A tensor of shape (None, self.vocab)
-        Returns:
-          loss: A 0-d tensor (scalar)
-        """
-        num_steps = self.config.num_steps
-        batch_size = self.config.batch_size
-
         targets = self.labels_placeholder
-        weights = tf.ones([batch_size,  num_steps], dtype=tf.float32)
+        weights = tf.ones([self._batch_size,  self._num_steps], dtype=tf.float32)
         cross_entropy_loss = tf.contrib.seq2seq.sequence_loss(output, targets, weights)
 
         return cross_entropy_loss
 
     def _add_training_op(self, loss):
-        """Sets up the training Ops.
-        Creates an optimizer and applies the gradients to all trainable variables.
-        Args:
-          loss: Loss tensor, from cross_entropy_loss.
-        Returns:
-          train_op: The Op for training.
-        """
         params = tf.trainable_variables()
         gradients = tf.gradients(loss, params)
         optimizer = tf.train.AdamOptimizer(self._lr)
@@ -144,16 +90,15 @@ class Model():
         return train_op
 
     def run_epoch(self, session, train_op=None, verbose=10):
-        config = self.config
-        self._lr = self._lr*self.config.anneal_rate
+        self._lr = self._lr*self._anneal_rate
         if not train_op:
             train_op = tf.no_op()
             dp = 1
-        total_steps = sum(1 for x in self.config.text_loader.data_iterator())
+        total_steps = sum(1 for x in self._text_loader.data_iterator())
         total_loss = []
         state = session.run(self.initial_state)
  
-        for step, (x, y) in enumerate(self.config.text_loader.data_iterator()):
+        for step, (x, y) in enumerate(self._text_loader.data_iterator()):
             # We need to pass in the initial state and retrieve the final state to give
             # the RNN proper history
             feed = {self.inputs_placeholder: x, self.labels_placeholder: y,
@@ -170,17 +115,7 @@ class Model():
         return np.mean(total_loss)
 
 def generate_text(session, scope_name, orig_config, seed_string, final_len=320):
-    """Generate text from the model.
-    Args:
-        session: tf.Session() object
-        scope_name: name of scope in which model exists
-        orig_config: A Config() object
-        seed_string: Initial text passed to model
-        final_len: Final length of output string
-    Returns:
-        output: List of word idxs
-    """
-    text_loader = orig_config.text_loader
+    text_loader = TextLoader(batch_size=orig_config.batch_size, seq_length=orig_config.num_steps)
     seq_len = len(seed_string)
 
     gen_config = deepcopy(orig_config)
@@ -197,7 +132,8 @@ def generate_text(session, scope_name, orig_config, seed_string, final_len=320):
                 gen_model.initial_state: state}
         state, preds = session.run([gen_model.final_state, gen_model.predictions[-1]], 
                                     feed_dict=feed)
-        preds = np.reshape(preds/np.sum(preds), preds.shape[1])
+        preds = np.reshape(preds/np.sum(preds), [-1, preds.shape[1]])
+        print(preds.shape)
         next_char = np.random.choice(text_loader.chars, p=preds)
         seed_string = seed_string + next_char
     return seed_string
@@ -241,9 +177,9 @@ def main():
         # This instructs gen_model to reuse the same variables as the model above
 
     model_file = './models/char_rnnlm.weights' 
-    config = tf.ConfigProto()
-    config.gpu_options.allow_growth = True
-    session = tf.Session(config=config)
+    sess_config = tf.ConfigProto()
+    sess_config.gpu_options.allow_growth = True
+    session = tf.Session(config=sess_config)
     best_val_pp = float('inf')
     best_val_epoch = 0
 
