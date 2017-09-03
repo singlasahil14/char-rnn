@@ -20,19 +20,22 @@ class Model():
         self._rnn_type = config.rnn_type
         self._lr = config.learning_rate
         self._anneal_rate = config.anneal_rate
-        self._add_placeholders()
+
+        sess_config = tf.ConfigProto()
+        sess_config.gpu_options.allow_growth = True
+        self._sess = tf.Session(config=sess_config)
+
+        self._inputs_placeholder = tf.placeholder(tf.int32, shape=(None, self._num_steps))
+        self._labels_placeholder = tf.placeholder(tf.int32, shape=(None, self._num_steps))
+
         inputs = self._add_embedding()
         rnn_outputs = self._add_model(inputs)
         self.outputs = self._add_projection(rnn_outputs)
         self.predictions = tf.nn.softmax(tf.cast(self.outputs, 'float64'))
 
-        self.calculate_loss = self._add_loss_op(self.outputs)
-        self.train_step = self._add_training_op(self.calculate_loss)
+        self._cross_entropy = self._add_cross_entropy_op(self.outputs)
+        self._train_step = self._add_training_op()
 
-    def _add_placeholders(self):
-        self.inputs_placeholder = tf.placeholder(tf.int32, shape=(None, self._num_steps))
-        self.labels_placeholder = tf.placeholder(tf.int32, shape=(None, self._num_steps))
-    
     def _add_embedding(self):
         embeddings = tf.get_variable(name='embeddings', shape=[self._vocab_size, self._embed_size])
         inputs = tf.nn.embedding_lookup(embeddings, self.inputs_placeholder)
@@ -73,7 +76,7 @@ class Model():
         outputs = tf.stack(outputs, axis=1)
         return outputs
 
-    def _add_loss_op(self, output):
+    def _add_cross_entropy_op(self, output):
         targets = self.labels_placeholder
         weights = tf.ones([self._batch_size,  self._num_steps], dtype=tf.float32)
         cross_entropy_loss = tf.contrib.seq2seq.sequence_loss(output, targets, weights)
@@ -82,29 +85,23 @@ class Model():
 
     def _add_training_op(self, loss):
         params = tf.trainable_variables()
-        gradients = tf.gradients(loss, params)
+        gradients = tf.gradients(self._cross_entropy, params)
         optimizer = tf.train.AdamOptimizer(self._lr)
 
         global_step = tf.Variable(0, name='global_step', trainable=False)
         train_op = optimizer.apply_gradients(zip(gradients, params), global_step=global_step)
         return train_op
 
-    def run_epoch(self, session, train_op=None, verbose=10):
+    def _run_epoch(self, verbose=10):
         self._lr = self._lr*self._anneal_rate
-        if not train_op:
-            train_op = tf.no_op()
-            dp = 1
         total_steps = sum(1 for x in self._text_loader.data_iterator())
         total_loss = []
-        state = session.run(self.initial_state)
+        state = self._sess.run(self.initial_state)
  
         for step, (x, y) in enumerate(self._text_loader.data_iterator()):
-            # We need to pass in the initial state and retrieve the final state to give
-            # the RNN proper history
-            feed = {self.inputs_placeholder: x, self.labels_placeholder: y,
-                    self.initial_state: state}
-            loss, state, _ = session.run(
-                  [self.calculate_loss, self.final_state, train_op], feed_dict=feed)
+            feed_dict = {self._inputs_placeholder: x, self._labels_placeholder: y, self.initial_state: state}
+            loss, state, _ = self._sess.run(
+                  [self.calculate_loss, self.final_state, self._train_step], feed_dict=feed)
             total_loss.append(loss)
             if verbose and step % verbose == 0:
                 sys.stdout.write('\r{} / {} : loss = {}'.format(
@@ -113,6 +110,19 @@ class Model():
         if verbose:
             sys.stdout.write('\r')
         return np.mean(total_loss)
+
+    def train(self):
+        init = tf.global_variables_initializer()
+        self._sess.run(init)
+        saver = tf.train.Saver()
+        for epoch in xrange(self._max_epochs):
+            print 'Epoch {}'.format(epoch)
+            start = time.time()
+            train_loss = model._run_epoch()
+            print 'Training loss: {}'.format(train_loss)
+            saver.save(session, model_file)
+            print 'Total time: {}'.format(time.time() - start)
+
 
 def generate_text(session, scope_name, orig_config, seed_string, final_len=320):
     text_loader = TextLoader(batch_size=orig_config.batch_size, seq_length=orig_config.num_steps)
@@ -174,26 +184,9 @@ def main():
     scope_name = 'RNNLM'
     with tf.variable_scope(scope_name) as scope:
         model = Model(config)
-        # This instructs gen_model to reuse the same variables as the model above
 
     model_file = './models/char_rnnlm.weights' 
-    sess_config = tf.ConfigProto()
-    sess_config.gpu_options.allow_growth = True
-    session = tf.Session(config=sess_config)
-    best_val_pp = float('inf')
-    best_val_epoch = 0
-
-    init = tf.global_variables_initializer()
-    session.run(init)
-    saver = tf.train.Saver()
-    for epoch in xrange(config.max_epochs):
-        print 'Epoch {}'.format(epoch)
-        start = time.time()
-        ###
-        train_loss = model.run_epoch(session, train_op=model.train_step)
-        print 'Training loss: {}'.format(train_loss)
-        saver.save(session, model_file)
-        print 'Total time: {}'.format(time.time() - start)
+    model.train()
 
     saver.restore(session, model_file)
     starting_text = 'ethics is a basic foundation of all that'
