@@ -1,6 +1,4 @@
 import tensorflow as tf
-from tensorflow.python.ops import rnn_cell
-from tensorflow.python.ops import seq2seq
 
 import numpy as np
 from copy import deepcopy
@@ -61,8 +59,7 @@ class Model():
         embed_size = self.config.embed_size
         vocab_size = self.config.vocab_size
         num_steps = self.config.num_steps
-        embeddings = tf.get_variable(name='embeddings',
-                                     shape=[vocab_size, embed_size])
+        embeddings = tf.get_variable(name='embeddings', shape=[vocab_size, embed_size])
         inputs = tf.nn.embedding_lookup(embeddings, self.inputs_placeholder)
         batch_mean, batch_var = tf.nn.moments(inputs, [0,1])
         inputs_bn = (inputs - batch_mean)/tf.sqrt(batch_var + 1e-3)
@@ -73,7 +70,6 @@ class Model():
                                 shape=[embed_size], 
                                 initializer=tf.constant_initializer(0.0))
         inputs = scale*inputs_bn + shift
-        inputs = tf.unstack(inputs, axis=1)
         return inputs
 
     def add_model(self, inputs):
@@ -93,18 +89,19 @@ class Model():
         model_type = self.config.model_type
 
         if model_type == 'rnn':
-            cell_fn = rnn_cell.BasicRNNCell
+            cell_fn = tf.contrib.rnn.BasicRNNCell
         elif model_type == 'gru':
-            cell_fn = rnn_cell.GRUCell
+            cell_fn = tf.contrib.rnn.GRUCell
         elif model_type == 'lstm':
-            cell_fn = rnn_cell.BasicLSTMCell
+            cell_fn = tf.contrib.rnn.BasicLSTMCell
 
         with tf.variable_scope('RNN') as scope:
             cell = cell_fn(hidden_size, state_is_tuple=True)
-            cell = rnn_cell.MultiRNNCell([cell] * num_layers, state_is_tuple=True)
-        
-        self.initial_state = state = cell.zero_state(batch_size, tf.float32)
-        rnn_outputs, self.final_state = tf.nn.rnn(cell, inputs, initial_state=self.initial_state)
+            cell = tf.contrib.rnn.MultiRNNCell([cell] * num_layers, state_is_tuple=True)
+       
+        self.initial_state = cell.zero_state(batch_size, tf.float32)
+        inputs = tf.unstack(inputs, axis=1)
+        rnn_outputs, self.final_state = tf.contrib.rnn.static_rnn(cell, inputs, initial_state=self.initial_state)
         return rnn_outputs
 
     def add_projection(self, rnn_outputs):
@@ -144,7 +141,7 @@ class Model():
 
         targets = tf.reshape(self.labels_placeholder, [-1])
         weights = tf.ones([batch_size * num_steps], dtype=tf.float32)
-        cross_entropy_loss = seq2seq.sequence_loss([output], [targets], [weights], vocab_size)
+        cross_entropy_loss = tf.contrib.seq2seq.sequence_loss([output], [targets], [weights], vocab_size)
 
         return cross_entropy_loss
 
