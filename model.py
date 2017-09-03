@@ -17,6 +17,7 @@ class Model():
         inputs = self._add_embedding()
         rnn_outputs = self._add_model(inputs)
         self.outputs = self._add_projection(rnn_outputs)
+        self._lr = self.config.learning_rate
   
         # We want to check how well we correctly predict the next word
         # We cast o to float64 as there are numerical issues at hand
@@ -136,7 +137,7 @@ class Model():
         """
         params = tf.trainable_variables()
         gradients = tf.gradients(loss, params)
-        optimizer = tf.train.AdamOptimizer(self.config.lr)
+        optimizer = tf.train.AdamOptimizer(self._lr)
 
         global_step = tf.Variable(0, name='global_step', trainable=False)
         train_op = optimizer.apply_gradients(zip(gradients, params), global_step=global_step)
@@ -144,6 +145,7 @@ class Model():
 
     def run_epoch(self, session, train_op=None, verbose=10):
         config = self.config
+        self._lr = self._lr*self.config.anneal_rate
         if not train_op:
             train_op = tf.no_op()
             dp = 1
@@ -239,31 +241,31 @@ def main():
         # This instructs gen_model to reuse the same variables as the model above
 
     model_file = './models/char_rnnlm.weights' 
-    with tf.Session() as session:
-        best_val_pp = float('inf')
-        best_val_epoch = 0
-  
-        init = tf.global_variables_initializer()
-        session.run(init)
-        saver = tf.train.Saver()
-        for epoch in xrange(config.max_epochs):
-            print 'Epoch {}'.format(epoch)
-            start = time.time()
-            ###
-            train_loss = model.run_epoch(
-            session, train_op=model.train_step)
-            model.config.lr = model.config.lr*model.config.anneal_by
-            print 'Training loss: {}'.format(train_loss)
-            saver.save(session, model_file)
-            print 'Total time: {}'.format(time.time() - start)
+    config = tf.ConfigProto()
+    config.gpu_options.allow_growth = True
+    session = tf.Session(config=config)
+    best_val_pp = float('inf')
+    best_val_epoch = 0
 
-        saver.restore(session, model_file)
-        starting_text = 'ethics is a basic foundation of all that'
-        while starting_text:
-            output = generate_sentence(session, scope_name, 
-                              config, seed_string=starting_text)
-            print(output)
-            starting_text = raw_input('> ')
+    init = tf.global_variables_initializer()
+    session.run(init)
+    saver = tf.train.Saver()
+    for epoch in xrange(config.max_epochs):
+        print 'Epoch {}'.format(epoch)
+        start = time.time()
+        ###
+        train_loss = model.run_epoch(session, train_op=model.train_step)
+        print 'Training loss: {}'.format(train_loss)
+        saver.save(session, model_file)
+        print 'Total time: {}'.format(time.time() - start)
+
+    saver.restore(session, model_file)
+    starting_text = 'ethics is a basic foundation of all that'
+    while starting_text:
+        output = generate_sentence(session, scope_name, 
+                          config, seed_string=starting_text)
+        print(output)
+        starting_text = raw_input('> ')
 
 if __name__ == "__main__":
     main()
