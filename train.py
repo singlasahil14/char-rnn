@@ -7,11 +7,8 @@ import sys, os
 
 from utils import TextLoader
 
-class Model():
-  
+class Model():  
     def __init__(self, config):
-        self._text_loader = TextLoader(batch_size=config.batch_size, seq_length=config.num_steps)
-        self._vocab_size = self._text_loader.vocab_size
         self._num_steps = config.num_steps
         self._embed_size = config.embed_size
         self._batch_size = config.batch_size
@@ -22,6 +19,13 @@ class Model():
         self._anneal_rate = config.anneal_rate
         self._num_epochs = config.num_epochs
         self._variable_scope = config.variable_scope
+
+        os.makedirs(config.result_path)
+        self._save_config(config.result_path)
+        self._models_dir = os.path.join(config.result_path, 'models')
+
+        self._text_loader = TextLoader(batch_size=config.batch_size, seq_length=config.num_steps)
+        self._vocab_size = self._text_loader.vocab_size
 
         sess_config = tf.ConfigProto()
         sess_config.gpu_options.allow_growth = True
@@ -39,15 +43,19 @@ class Model():
         self._cross_entropy = self._add_cross_entropy_op(self.outputs)
         self._train_step = self._add_training_op()
 
+    def _save_config(self, result_dir):
+        config_path = os.path.join(config.result_path, 'config')
+        f = open(config_path, "w")
+        f.write(self.__dict__)
+        f.close()
+
     def _add_embedding(self):
         embeddings = tf.get_variable(name='embeddings', shape=[self._vocab_size, self._embed_size])
         inputs = tf.nn.embedding_lookup(embeddings, self._inputs_placeholder)
         batch_mean, batch_var = tf.nn.moments(inputs, [0,1])
         inputs_bn = (inputs - batch_mean)/tf.sqrt(batch_var + 1e-3)
-        scale = tf.get_variable(name='scale', shape=[self._embed_size],
-                                initializer=tf.constant_initializer(1.0))
-        shift = tf.get_variable(name='shift', shape=[self._embed_size], 
-                                initializer=tf.constant_initializer(0.0))
+        scale = tf.get_variable(name='scale', shape=[self._embed_size], initializer=tf.constant_initializer(1.0))
+        shift = tf.get_variable(name='shift', shape=[self._embed_size], initializer=tf.constant_initializer(0.0))
         inputs = scale*inputs_bn + shift
         return inputs
 
@@ -70,8 +78,7 @@ class Model():
     def _add_projection(self, rnn_outputs):
         with tf.variable_scope('projection') as scope:
             proj_U = tf.get_variable(name='W', shape=[self._hidden_size, self._vocab_size])
-            proj_b = tf.get_variable(name='biases', shape=[self._vocab_size],
-                                     initializer=tf.constant_initializer(0.0))
+            proj_b = tf.get_variable(name='biases', shape=[self._vocab_size], initializer=tf.constant_initializer(0.0))
 
         concat_rnn_outputs = tf.concat(rnn_outputs, 0)
         concat_outputs = tf.matmul(concat_rnn_outputs, proj_U) + proj_b
@@ -83,7 +90,6 @@ class Model():
         targets = self._labels_placeholder
         weights = tf.ones([self._batch_size,  self._num_steps], dtype=tf.float32)
         cross_entropy_loss = tf.contrib.seq2seq.sequence_loss(output, targets, weights)
-
         return cross_entropy_loss
 
     def _add_training_op(self):
@@ -122,8 +128,10 @@ class Model():
             start = time.time()
             train_loss = self._run_epoch()
             print 'Training loss: {}'.format(train_loss)
-            saver.save(session, model_file)
             print 'Total time: {}'.format(time.time() - start)
+
+            model_path = os.path.join(self._models_dir, 'model')
+            saver.save(self._sess, model_path, write_meta_graph=False, write_state=False)
 
     def generate_text(self, seed_string, final_len=320):
         seq_len = len(seed_string)
@@ -132,8 +140,8 @@ class Model():
         max_iter = final_len - seq_len
         for i in range(max_iter):
             x=np.array([self._text_loader.char2indices[c] for c in seed_string[-seq_len:]])[np.newaxis,:]
-            feed = {self._inputs_placeholder: x, self._initial_state: state}
-            state, preds = self._sess.run([self._final_state, self._predictions[-1]], feed_dict=feed)
+            feed_dict = {self._inputs_placeholder: x, self._initial_state: state}
+            state, preds = self._sess.run([self._final_state, self._predictions[-1]], feed_dict=feed_dict)
             preds = np.reshape(preds/np.sum(preds), [-1, preds.shape[1]])
             next_char = np.random.choice(self._text_loader.chars, p=preds)
             seed_string = seed_string + next_char
