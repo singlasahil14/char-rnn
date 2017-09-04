@@ -3,7 +3,7 @@ import argparse
 import numpy as np
 from copy import deepcopy
 import time
-import sys
+import sys, os
 
 from utils import TextLoader
 
@@ -20,6 +20,7 @@ class Model():
         self._rnn_type = config.rnn_type
         self._lr = config.learning_rate
         self._anneal_rate = config.anneal_rate
+        self._num_epochs = config.num_epochs
         self._variable_scope = config.variable_scope
 
         sess_config = tf.ConfigProto()
@@ -40,7 +41,7 @@ class Model():
 
     def _add_embedding(self):
         embeddings = tf.get_variable(name='embeddings', shape=[self._vocab_size, self._embed_size])
-        inputs = tf.nn.embedding_lookup(embeddings, self.inputs_placeholder)
+        inputs = tf.nn.embedding_lookup(embeddings, self._inputs_placeholder)
         batch_mean, batch_var = tf.nn.moments(inputs, [0,1])
         inputs_bn = (inputs - batch_mean)/tf.sqrt(batch_var + 1e-3)
         scale = tf.get_variable(name='scale', shape=[self._embed_size],
@@ -79,13 +80,13 @@ class Model():
         return outputs
 
     def _add_cross_entropy_op(self, output):
-        targets = self.labels_placeholder
+        targets = self._labels_placeholder
         weights = tf.ones([self._batch_size,  self._num_steps], dtype=tf.float32)
         cross_entropy_loss = tf.contrib.seq2seq.sequence_loss(output, targets, weights)
 
         return cross_entropy_loss
 
-    def _add_training_op(self, loss):
+    def _add_training_op(self):
         params = tf.trainable_variables()
         gradients = tf.gradients(self._cross_entropy, params)
         optimizer = tf.train.AdamOptimizer(self._lr)
@@ -102,7 +103,7 @@ class Model():
  
         for step, (x, y) in enumerate(self._text_loader.data_iterator()):
             feed_dict = {self._inputs_placeholder: x, self._labels_placeholder: y, self._initial_state: state}
-            loss, state, _ = self._sess.run([self.calculate_loss, self._final_state, self._train_step], feed_dict=feed)
+            loss, state, _ = self._sess.run([self._cross_entropy, self._final_state, self._train_step], feed_dict=feed_dict)
             total_loss.append(loss)
             if verbose and step % verbose == 0:
                 sys.stdout.write('\r{} / {} : loss = {}'.format(
@@ -116,10 +117,10 @@ class Model():
         init = tf.global_variables_initializer()
         self._sess.run(init)
         saver = tf.train.Saver()
-        for epoch in xrange(self._max_epochs):
+        for epoch in xrange(self._num_epochs):
             print 'Epoch {}'.format(epoch)
             start = time.time()
-            train_loss = model._run_epoch()
+            train_loss = self._run_epoch()
             print 'Training loss: {}'.format(train_loss)
             saver.save(session, model_file)
             print 'Total time: {}'.format(time.time() - start)
@@ -148,7 +149,7 @@ def add_arguments(parser):
     parser.add_argument('--learning-rate', default=0.001, type=float, help='learning rate for adam optimizer')
     parser.add_argument('--batch-size', default=128, type=int, help='batch size to use for training')
     parser.add_argument('--anneal-rate', default=0.97, type=float, help='rate by which to decrease the learning rate every epoch')
-    parser.add_argument('--max-epochs', default=50, type=int, help='number of epochs to train for')
+    parser.add_argument('--num-epochs', default=50, type=int, help='number of epochs to train for')
     parser.add_argument('--variable-scope', default='RNNLM', type=str, help='variable scope of char-rnn')
     return parser
 
@@ -161,7 +162,7 @@ def check_config(config):
     assert config.learning_rate > 0
     assert config.batch_size > 0
     assert config.anneal_rate > 0
-    assert config.max_epochs > 0
+    assert config.num_epochs > 0
 
 def main():
     parser = argparse.ArgumentParser()
