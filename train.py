@@ -3,7 +3,9 @@ import argparse
 import numpy as np
 from copy import deepcopy
 import time
+import pandas as pd
 import sys, os
+from collections import defaultdict
 
 from utils import TextLoader
 
@@ -19,40 +21,49 @@ class Model():
         self._anneal_rate = config.anneal_rate
         self._num_epochs = config.num_epochs
         self._variable_scope = config.variable_scope
+        self._result_path = config.result_path
 
-        os.makedirs(config.result_path)
-        self._save_config(config.result_path)
-        self._models_dir = os.path.join(config.result_path, 'models')
+        os.makedirs(self._result_path)
+        self._save_config(self._result_path)
+        self._models_dir = os.path.join(self._result_path, 'models')
         os.makedirs(self._models_dir)
 
         self._text_loader = TextLoader(batch_size=config.batch_size, seq_length=config.num_steps)
         self._vocab_size = self._text_loader.vocab_size
 
+        self._inputs = tf.placeholder(tf.int32, shape=(self._batch_size, self._num_steps))
+        self._labels = tf.placeholder(tf.int32, shape=(self._batch_size, self._num_steps))
+        logits = self._setup_logits(self._inputs, reuse=False)
+        total_loss = 0
+        self._cross_entropy = self._add_cross_entropy_op(logits, self._labels)
+        total_loss += self._cross_entropy
+        self._train_step = self._add_training_op(total_loss)
+
         sess_config = tf.ConfigProto()
         sess_config.gpu_options.allow_growth = True
         self._sess = tf.Session(config=sess_config)
 
-        self._inputs_placeholder = tf.placeholder(tf.int32, shape=(None, self._num_steps))
-        self._labels_placeholder = tf.placeholder(tf.int32, shape=(None, self._num_steps))
+    def _setup_logits(self, inputs, reuse=True):
+        with tf.variable_scope(self._variable_scope, reuse=reuse):
+            input_embeddings = self._add_embedding(inputs)
+            rnn_outputs = self._add_model(input_embeddings)
+            logits = self._add_projection(rnn_outputs)
+        return logits
 
-        with tf.variable_scope(self._variable_scope):
-            inputs = self._add_embedding()
-            rnn_outputs = self._add_model(inputs)
-            self.outputs = self._add_projection(rnn_outputs)
-        
-        self._predictions = tf.nn.softmax(tf.cast(self.outputs, 'float64'))
-        self._cross_entropy = self._add_cross_entropy_op(self.outputs)
-        self._train_step = self._add_training_op()
+    def _infer(self, inputs):
+        logits = self._setup_logits(inputs, reuse=True)
+        predictions = tf.nn.softmax(tf.cast(logits, 'float64'))
+        return predictions
 
     def _save_config(self, result_dir):
-        config_path = os.path.join(config.result_path, 'config')
+        config_path = os.path.join(result_dir, 'config')
         f = open(config_path, "w")
-        f.write(self.__dict__)
+        f.write(str(self.__dict__))
         f.close()
 
-    def _add_embedding(self):
+    def _add_embedding(self, inputs):
         embeddings = tf.get_variable(name='embeddings', shape=[self._vocab_size, self._embed_size])
-        inputs = tf.nn.embedding_lookup(embeddings, self._inputs_placeholder)
+        inputs = tf.nn.embedding_lookup(embeddings, inputs)
         batch_mean, batch_var = tf.nn.moments(inputs, [0,1])
         inputs_bn = (inputs - batch_mean)/tf.sqrt(batch_var + 1e-3)
         scale = tf.get_variable(name='scale', shape=[self._embed_size], initializer=tf.constant_initializer(1.0))
@@ -71,7 +82,7 @@ class Model():
         with tf.variable_scope('RNN') as scope:
             cell = tf.contrib.rnn.MultiRNNCell([cell_fn(self._hidden_size) for _ in range(self._num_layers)])
        
-        self._initial_state = cell.zero_state(self._batch_size, tf.float32)
+        self._initial_state = cell.zero_state(tf.shape(inputs)[0], tf.float32)
         inputs = tf.unstack(inputs, axis=1)
         rnn_outputs, self._final_state = tf.contrib.rnn.static_rnn(cell, inputs, initial_state=self._initial_state)
         return rnn_outputs
@@ -87,15 +98,14 @@ class Model():
         outputs = tf.stack(outputs, axis=1)
         return outputs
 
-    def _add_cross_entropy_op(self, output):
-        targets = self._labels_placeholder
+    def _add_cross_entropy_op(self, logits, labels):
         weights = tf.ones([self._batch_size,  self._num_steps], dtype=tf.float32)
-        cross_entropy_loss = tf.contrib.seq2seq.sequence_loss(output, targets, weights)
+        cross_entropy_loss = tf.contrib.seq2seq.sequence_loss(logits, labels, weights)
         return cross_entropy_loss
 
-    def _add_training_op(self):
+    def _add_training_op(self, total_loss):
         params = tf.trainable_variables()
-        gradients = tf.gradients(self._cross_entropy, params)
+        gradients = tf.gradients(total_loss, params)
         optimizer = tf.train.AdamOptimizer(self._lr)
 
         global_step = tf.Variable(0, name='global_step', trainable=False)
@@ -105,22 +115,24 @@ class Model():
     def _run_epoch(self, verbose=10):
         self._lr = self._lr*self._anneal_rate
         total_steps = sum(1 for x in self._text_loader.data_iterator())
-        total_loss = []
+        cross_entropy_values = []
         state = self._sess.run(self._initial_state)
  
         for step, (x, y) in enumerate(self._text_loader.data_iterator()):
-            feed_dict = {self._inputs_placeholder: x, self._labels_placeholder: y, self._initial_state: state}
-            loss, state, _ = self._sess.run([self._cross_entropy, self._final_state, self._train_step], feed_dict=feed_dict)
-            total_loss.append(loss)
+            feed_dict = {self._inputs: x, self._labels: y, self._initial_state: state}
+            _, cross_entropy, state = self._sess.run([self._train_step, self._cross_entropy, self._final_state], feed_dict=feed_dict)
+            self._train_metrics['cross_entropy'].append(cross_entropy)
+            cross_entropy_values.append(cross_entropy)
             if verbose and step % verbose == 0:
                 sys.stdout.write('\r{} / {} : loss = {}'.format(
-				  step, total_steps, np.mean(total_loss)))
+				  step, total_steps, np.mean(cross_entropy_values)))
                 sys.stdout.flush()
         if verbose:
             sys.stdout.write('\r')
-        return np.mean(total_loss)
+        return np.mean(cross_entropy_values)
 
     def train(self):
+        self._train_metrics = defaultdict(list)
         init = tf.global_variables_initializer()
         self._sess.run(init)
         saver = tf.train.Saver()
@@ -133,19 +145,25 @@ class Model():
 
             model_path = os.path.join(self._models_dir, str(epoch))
             saver.save(self._sess, model_path, write_meta_graph=False, write_state=False)
+        pd_train_metrics = pd.DataFrame(self._train_metrics)
+        pd_train_metrics.to_csv(os.path.join(self._result_path, 'train_metrics.csv'))
+
 
     def generate_text(self, seed_string, final_len=320):
         seq_len = len(seed_string)
-        self._inputs_placeholder = tf.placeholder(tf.int32, shape=(None, seq_len))
-        state = session.run(self._initial_state)
+        inputs = tf.placeholder(tf.int32, shape=(1, seq_len))
+        preds = self._infer(inputs)
+
+        state = self._sess.run(self._initial_state)
         max_iter = final_len - seq_len
+        print "Generating text"
         for i in range(max_iter):
-            x=np.array([self._text_loader.char2indices[c] for c in seed_string[-seq_len:]])[np.newaxis,:]
-            feed_dict = {self._inputs_placeholder: x, self._initial_state: state}
-            state, preds = self._sess.run([self._final_state, self._predictions], feed_dict=feed_dict)
-            print preds.shape
-            preds = np.reshape(preds/np.sum(preds), [-1, preds.shape[1]])
-            next_char = np.random.choice(self._text_loader.chars, p=preds)
+            x = np.array([self._text_loader.char2indices[c] for c in seed_string[-seq_len:]])[np.newaxis,:]
+            feed_dict = {inputs: x, self._initial_state: state}
+            state, np_preds = self._sess.run([self._final_state, preds], feed_dict=feed_dict)
+            np_preds = np_preds[0][-1]
+            np_preds = np_preds/np.sum(np_preds)
+            next_char = np.random.choice(self._text_loader.chars, p=np_preds)
             seed_string = seed_string + next_char
         return seed_string
 
