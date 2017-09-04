@@ -23,6 +23,7 @@ class Model():
         os.makedirs(config.result_path)
         self._save_config(config.result_path)
         self._models_dir = os.path.join(config.result_path, 'models')
+        os.makedirs(self._models_dir)
 
         self._text_loader = TextLoader(batch_size=config.batch_size, seq_length=config.num_steps)
         self._vocab_size = self._text_loader.vocab_size
@@ -130,7 +131,7 @@ class Model():
             print 'Training loss: {}'.format(train_loss)
             print 'Total time: {}'.format(time.time() - start)
 
-            model_path = os.path.join(self._models_dir, 'model')
+            model_path = os.path.join(self._models_dir, str(epoch))
             saver.save(self._sess, model_path, write_meta_graph=False, write_state=False)
 
     def generate_text(self, seed_string, final_len=320):
@@ -141,7 +142,8 @@ class Model():
         for i in range(max_iter):
             x=np.array([self._text_loader.char2indices[c] for c in seed_string[-seq_len:]])[np.newaxis,:]
             feed_dict = {self._inputs_placeholder: x, self._initial_state: state}
-            state, preds = self._sess.run([self._final_state, self._predictions[-1]], feed_dict=feed_dict)
+            state, preds = self._sess.run([self._final_state, self._predictions, feed_dict=feed_dict)
+            print preds.shape
             preds = np.reshape(preds/np.sum(preds), [-1, preds.shape[1]])
             next_char = np.random.choice(self._text_loader.chars, p=preds)
             seed_string = seed_string + next_char
