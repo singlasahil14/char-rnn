@@ -142,7 +142,7 @@ class Model():
         for i in range(max_iter):
             x=np.array([self._text_loader.char2indices[c] for c in seed_string[-seq_len:]])[np.newaxis,:]
             feed_dict = {self._inputs_placeholder: x, self._initial_state: state}
-            state, preds = self._sess.run([self._final_state, self._predictions, feed_dict=feed_dict)
+            state, preds = self._sess.run([self._final_state, self._predictions], feed_dict=feed_dict)
             print preds.shape
             preds = np.reshape(preds/np.sum(preds), [-1, preds.shape[1]])
             next_char = np.random.choice(self._text_loader.chars, p=preds)
