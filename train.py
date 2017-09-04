@@ -9,6 +9,7 @@ from collections import defaultdict
 
 from utils import TextLoader
 
+tf.set_random_seed(99)
 class Model():  
     def __init__(self, config):
         self._result_path = config.result_path
