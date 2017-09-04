@@ -11,6 +11,7 @@ from utils import TextLoader
 
 class Model():  
     def __init__(self, config):
+        self._result_path = config.result_path
         self._num_steps = config.num_steps
         self._embed_size = config.embed_size
         self._batch_size = config.batch_size
@@ -21,7 +22,7 @@ class Model():
         self._anneal_rate = config.anneal_rate
         self._num_epochs = config.num_epochs
         self._variable_scope = config.variable_scope
-        self._result_path = config.result_path
+        self._orthonormality_weight = config.orthonormality_weight
 
         os.makedirs(self._result_path)
         self._save_config(self._result_path)
@@ -37,6 +38,7 @@ class Model():
         total_loss = 0
         self._cross_entropy = self._add_cross_entropy_op(logits, self._labels)
         total_loss += self._cross_entropy
+        total_loss += self._orthonormality_weight*self._orthonormality_loss
         self._train_step = self._add_training_op(total_loss)
 
         sess_config = tf.ConfigProto()
@@ -80,11 +82,13 @@ class Model():
             cell_fn = tf.contrib.rnn.BasicLSTMCell
 
         with tf.variable_scope('RNN') as scope:
-            cell = tf.contrib.rnn.MultiRNNCell([cell_fn(self._hidden_size) for _ in range(self._num_layers)])
-       
+            cell_list = [cell_fn(self._hidden_size) for _ in range(self._num_layers)]
+            cell = tf.contrib.rnn.MultiRNNCell(cell_list)
+    
         self._initial_state = cell.zero_state(tf.shape(inputs)[0], tf.float32)
         inputs = tf.unstack(inputs, axis=1)
         rnn_outputs, self._final_state = tf.contrib.rnn.static_rnn(cell, inputs, initial_state=self._initial_state)
+        self._orthonormality_loss = self._add_orthonormality_loss_op(cell_list)
         return rnn_outputs
 
     def _add_projection(self, rnn_outputs):
@@ -103,6 +107,25 @@ class Model():
         cross_entropy_loss = tf.contrib.seq2seq.sequence_loss(logits, labels, weights)
         return cross_entropy_loss
 
+    def _add_orthonormality_loss_op(self, cell_list):
+        input_size = self._embed_size
+        recurrent_matrices = []
+        for cell in cell_list:
+            kernel_vars = [v for v in cell.trainable_variables if 'kernel' in v.name]
+            for kernel_var in kernel_vars:
+                kernel_shape = kernel_var.get_shape().as_list()
+                recurrent_var = tf.slice(kernel_var, [input_size, 0], [kernel_shape[0]-input_size, kernel_shape[1]])
+                recurrent_matrices += tf.split(recurrent_var, kernel_shape[1]/self._hidden_size, axis=1)
+            input_size = self._hidden_size
+
+        orthonormality_loss = 0
+        for recurrent_mat in recurrent_matrices:
+            prod_mat = tf.matmul(tf.transpose(recurrent_mat), recurrent_mat)
+            diff_mat = tf.eye(self._hidden_size) - prod_mat
+            orthonormality_loss += tf.reduce_sum(tf.square(diff_mat))
+        return orthonormality_loss
+
+
     def _add_training_op(self, total_loss):
         params = tf.trainable_variables()
         gradients = tf.gradients(total_loss, params)
@@ -120,8 +143,10 @@ class Model():
  
         for step, (x, y) in enumerate(self._text_loader.data_iterator()):
             feed_dict = {self._inputs: x, self._labels: y, self._initial_state: state}
-            _, cross_entropy, state = self._sess.run([self._train_step, self._cross_entropy, self._final_state], feed_dict=feed_dict)
+            _, cross_entropy, orthonormality_loss, state = self._sess.run([self._train_step, self._cross_entropy, self._orthonormality_loss, 
+                                                                          self._final_state], feed_dict=feed_dict)
             self._train_metrics['cross_entropy'].append(cross_entropy)
+            self._train_metrics['orthonormality_loss'].append(orthonormality_loss)
             cross_entropy_values.append(cross_entropy)
             if verbose and step % verbose == 0:
                 sys.stdout.write('\r{} / {} : loss = {}'.format(
@@ -179,6 +204,8 @@ def add_arguments(parser):
     parser.add_argument('--anneal-rate', default=0.97, type=float, help='rate by which to decrease the learning rate every epoch')
     parser.add_argument('--num-epochs', default=50, type=int, help='number of epochs to train for')
     parser.add_argument('--variable-scope', default='RNNLM', type=str, help='variable scope of char-rnn')
+    parser.add_argument('--orthonormality-weight', default=0., type=float, help='weight for orthonormality loss')
+
     return parser
 
 def check_config(config):
@@ -191,6 +218,7 @@ def check_config(config):
     assert config.batch_size > 0
     assert config.anneal_rate > 0
     assert config.num_epochs > 0
+    assert config.orthonormality_weight >= 0
 
 def main():
     parser = argparse.ArgumentParser()
