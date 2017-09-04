@@ -139,6 +139,7 @@ class Model():
         self._lr = self._lr*self._anneal_rate
         total_steps = sum(1 for x in self._text_loader.data_iterator())
         cross_entropy_values = []
+        orthonormality_loss_values = []
         state = self._sess.run(self._initial_state)
  
         for step, (x, y) in enumerate(self._text_loader.data_iterator()):
@@ -148,9 +149,10 @@ class Model():
             self._train_metrics['cross_entropy'].append(cross_entropy)
             self._train_metrics['orthonormality_loss'].append(orthonormality_loss)
             cross_entropy_values.append(cross_entropy)
+            orthonormality_loss_values.append(orthonormality_loss)
             if verbose and step % verbose == 0:
-                sys.stdout.write('\r{} / {} : loss = {}'.format(
-				  step, total_steps, np.mean(cross_entropy_values)))
+                sys.stdout.write('\r{} / {} : cross entropy = {}, orthonormality loss = {}'.format(
+				  step, total_steps, np.mean(cross_entropy_values), np.mean(orthonormality_loss_values)))
                 sys.stdout.flush()
         if verbose:
             sys.stdout.write('\r')
